@@ -137,5 +137,5 @@ class BdcScraperMongo:
 
 
 if __name__ == "__main__":
-    scraper = BdcScraperMongo(start_page=1, max_pages=2)
+    scraper = BdcScraperMongo(start_page=1, max_pages=1)
     scraper.run()
