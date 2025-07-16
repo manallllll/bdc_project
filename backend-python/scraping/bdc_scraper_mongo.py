@@ -1,19 +1,19 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from pymongo import MongoClient
 from bs4 import BeautifulSoup
 import time
-import json
+import re
 
 
-class BdcScraper:
-    def __init__(self, start_page=1, max_pages=5, output_file='bdc_data.json'):
+class BdcScraperMongo:
+    def __init__(self, start_page=1, max_pages=5):
         self.start_page = start_page
         self.max_pages = max_pages
         self.base_url = "https://www.marchespublics.gov.ma/bdc/entreprise/consultation/"
         self.details_base = "https://www.marchespublics.gov.ma"
-        self.data = []
-        self.output_file = output_file
         self.driver = self._init_driver()
+        self.collection = self._init_mongo()
 
     def _init_driver(self):
         options = Options()
@@ -21,6 +21,11 @@ class BdcScraper:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         return webdriver.Chrome(options=options)
+
+    def _init_mongo(self):
+        client = MongoClient("mongodb://localhost:27017/")
+        db = client["bdc_db"]
+        return db["bdc_results"]
 
     def charger_page(self, page_num):
         print(f"➡️ Chargement de la page {page_num}...")
@@ -52,14 +57,38 @@ class BdcScraper:
             except:
                 return None
 
+        # ✅ Extraire référence à partir du <h4>#...</h4>
+        ref_text = soup.find("h4")
+        reference = None
+        if ref_text:
+            match = re.search(r"#?([\w/-]+)", ref_text.get_text(strip=True))
+            if match:
+                reference = match.group(1)
+
+        # ✅ Objet
+        objet = None
+        objet_container = soup.find("span", string="Objet")
+        if objet_container:
+            span_obj = objet_container.find_next("span", class_="text-black")
+            if span_obj:
+                objet = span_obj.get_text(strip=True)
+
+        # ✅ Acheteur
+        acheteur = None
+        acheteur_title = soup.find("span", string="Acheteur public")
+        if acheteur_title:
+            acheteur_span = acheteur_title.find_next_sibling("span")
+            if acheteur_span:
+                acheteur = acheteur_span.get_text(strip=True)
+
         bdc = {
             "url": url,
-            "reference": safe_select_text("div.main-content a.font-bold.table__links"),
-            "objet": safe_select_text("div.main-content a.truncate_fullWidth.table__links"),
-            "acheteur": safe_select_text("div.main-content a.table__links span.font-bold.text-small + span"),
-            "lieu": safe_select_text("#location + .d-flex span.truncate-one-line"),
-            "date_mise_en_ligne": safe_select_text("#dateMiseEnLigne + .d-flex span.truncate-one-line"),
-            "date_limite": safe_select_text("#calendar + .d-flex span:last-child"),
+            "reference": reference,
+            "objet": objet,
+            "acheteur": acheteur,
+            "lieu": safe_select_text("#location + div span.truncate-one-line"),
+            "date_mise_en_ligne": safe_select_text("#dateMiseEnLigne + div span.truncate-one-line"),
+            "date_limite": safe_select_text("#calendar + div span:last-child"),
             "fichiers_attaches": [
                 self.details_base + a.get("href")
                 for a in soup.select("a.nounderlinelink")
@@ -87,13 +116,12 @@ class BdcScraper:
 
         return bdc
 
-    def enregistrer_bdc(self, bdc):
-        self.data.append(bdc)
-
-    def sauvegarder_json(self):
-        with open(self.output_file, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
-        print(f"✅ Données sauvegardées dans {self.output_file}")
+    def inserer_si_nouveau(self, bdc):
+        if bdc["reference"] and not self.collection.find_one({"reference": bdc["reference"]}):
+            self.collection.insert_one(bdc)
+            print(f"✅ Inséré : {bdc['reference']}")
+        else:
+            print(f"⏩ Déjà existant ou référence manquante : {bdc['reference']}")
 
     def run(self):
         for page in range(self.start_page, self.start_page + self.max_pages):
@@ -102,13 +130,12 @@ class BdcScraper:
             for url in urls:
                 try:
                     bdc_data = self.extraire_detail_bdc(url)
-                    self.enregistrer_bdc(bdc_data)
+                    self.inserer_si_nouveau(bdc_data)
                 except Exception as e:
                     print(f"⚠️ Erreur lors de l'extraction : {e}")
-        self.sauvegarder_json()
         self.driver.quit()
 
 
 if __name__ == "__main__":
-    scraper = BdcScraper(start_page=1, max_pages=1)
+    scraper = BdcScraperMongo(start_page=1, max_pages=2)
     scraper.run()
